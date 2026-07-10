@@ -590,6 +590,31 @@ function canRenderArgsAsKeyValue(args: unknown): args is Record<string, unknown>
   return keys.length > 0 && keys.length <= KV_MAX_KEYS;
 }
 
+// Args already represented in the collapsed row / header detail for kinds that
+// summarize their primary target; everything else stays auditable on expand.
+const ROW_SUMMARIZED_ARG_KEYS: Partial<Record<ToolCallView["kind"], ReadonlySet<string>>> = {
+  read: new Set(["path", "file_path", "filePath", "notebook_path", "offset", "limit"]),
+  search: new Set(["pattern", "query", "glob", "path"]),
+  fetch: new Set(["url"]),
+};
+
+function extraArgsBeyondRowTarget(
+  args: unknown,
+  kind: ToolCallView["kind"],
+): Record<string, unknown> | null {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return null;
+  }
+  const summarized = ROW_SUMMARIZED_ARG_KEYS[kind];
+  if (!summarized) {
+    return args as Record<string, unknown>;
+  }
+  const extras = Object.fromEntries(
+    Object.entries(args as Record<string, unknown>).filter(([key]) => !summarized.has(key)),
+  );
+  return Object.keys(extras).length > 0 ? extras : null;
+}
+
 function renderTerminalBlock(command: string, output: string | undefined, isError: boolean) {
   return html`
     <div class="chat-tool-term ${isError ? "chat-tool-term--error" : ""}">
@@ -832,10 +857,14 @@ export function renderExpandedToolCardContent(
     `;
   }
 
-  // File reads and searches already summarize their args in the row and the
-  // header detail; the raw args JSON block is noise for them.
-  const showInputBlock =
-    hasInput && view.kind !== "read" && view.kind !== "search" && view.kind !== "fetch";
+  // File reads and searches summarize their primary target in the row, so the
+  // full args JSON is noise — but any remaining args (filters, limits, request
+  // options…) stay visible as key-value rows for auditability.
+  const summarizedKind = view.kind === "read" || view.kind === "search" || view.kind === "fetch";
+  const inputBlockArgs = summarizedKind
+    ? extraArgsBeyondRowTarget(card.args, view.kind)
+    : card.args;
+  const showInputBlock = hasInput && (!summarizedKind || inputBlockArgs !== null);
 
   return html`
     <div class="chat-tool-card ${isError ? "chat-tool-card--error" : ""}">
@@ -848,8 +877,8 @@ export function renderExpandedToolCardContent(
           `
         : nothing}
       ${showInputBlock
-        ? canRenderArgsAsKeyValue(card.args)
-          ? renderArgsKeyValueList(card.args)
+        ? canRenderArgsAsKeyValue(inputBlockArgs)
+          ? renderArgsKeyValueList(inputBlockArgs)
           : renderToolDataBlock({
               label: "Tool input",
               text: card.inputText!,
